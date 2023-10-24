@@ -1,1 +1,119 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from tensorflow import keras
+from matplotlib import pyplot as plt
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
 
+data = pd.read_csv('magic_gamma_telescope/magic04.csv')
+
+columns = ['fLength', 'fWidth', 'fSize', 'fConc', 'fConc1', 'fAsym', 'fM3Long', 'fM3Trans', 'fAlpha', 'fDist', 'class']
+data.columns = columns
+
+data
+
+<h1>Preprocessing</h1>
+
+X = data[columns[:-1]]
+y = data['class']
+
+features_pipeline = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler()),
+])
+
+labelencoder = LabelEncoder()
+
+X = features_pipeline.fit_transform(X)
+y = labelencoder.fit_transform(y)
+
+y = y.astype(float)
+
+X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, test_size=0.2)
+
+X_train, X_val = train_test_split(X_train_full, test_size=0.2)
+y_train, y_val = train_test_split(y_train_full, test_size=0.2)
+
+<h1>Converting to Tensorflow dataset</h1>
+
+X_train = tf.convert_to_tensor(X_train)
+X_val = tf.convert_to_tensor(X_val)
+X_test = tf.convert_to_tensor(X_test)
+y_train = tf.convert_to_tensor(y_train)
+y_val = tf.convert_to_tensor(y_val)
+y_test = tf.convert_to_tensor(y_test)
+
+<h1>Building the model</h1>
+
+def build_model(n_hidden=1, n_neurons=30, input_shape=[10,], optimizer="adam"):
+    model = keras.models.Sequential() 
+    model.add(keras.layers.Flatten(input_shape=input_shape))
+    for _ in range(n_hidden):
+        model.add(keras.layers.Dense(n_neurons, activation="relu"))
+    model.add(keras.layers.Dense(10, activation="softmax"))
+    model.compile(optimizer=optimizer,
+        loss="sparse_categorical_crossentropy",
+        metrics=["accuracy"])
+    return model
+
+<h1>Training the model with hyperparams</h1>
+
+from sklearn.model_selection import KFold
+
+param_grid = {
+    'n_hidden': [1,2],
+    'n_neurons': [10, 50, 100],
+    'optimizer': ['adam', 'sgd']
+}
+
+kfold = KFold(n_splits=5, shuffle=True)
+
+n_epochs = 5
+
+results = []
+for n_hidden in param_grid['n_hidden']:
+    for n_neurons in param_grid['n_neurons']:
+        for optimizer in param_grid['optimizer']:
+            model = build_model(n_hidden=n_hidden, n_neurons=n_neurons, optimizer=optimizer)
+            fold_scores = []
+            for train_idx, val_idx in kfold.split(X):
+                X_train, X_val = X[train_idx], X[val_idx]
+                y_train, y_val = y[train_idx], y[val_idx]
+                model.fit(X_train, y_train, epochs=n_epochs, validation_data=(X_val, y_val))
+                _, accuracy = model.evaluate(X_val, y_val, verbose=0)
+                fold_scores.append(accuracy)
+            avg_score = sum(fold_scores) / len(fold_scores)
+            results.append({'n_hidden': n_hidden, 'n_neurons': n_neurons, 'optimizer' : optimizer, 'score': avg_score, 'model': model})
+
+<h1>Evaluation of the model</h1>
+
+best_result = max(results, key=lambda x: x['score'])
+best_params = {'n_hidden': best_result['n_hidden'], 'n_neurons': best_result['n_neurons'], 'optimizer': best_result['optimizer']}
+best_score = best_result['score']
+best_model = best_result['model']
+
+print("Best Parameters: ", best_params)
+print("Best Score: ", best_score * 100)
+
+
+best_model.summary()
+
+history = best_model.fit(X_train, y_train, epochs=n_epochs, validation_data=(X_val, y_val))
+
+pd.DataFrame(history.history).plot(figsize=(8, 5)) 
+plt.grid(True)
+plt.gca().set_ylim(0, 1)
+
+probs = best_model.predict(X_test)
+
+predications = labelencoder.inverse_transform(np.argmax(probs, axis=1))
+print(np.argmax(probs, axis=1))
+
+predictions_X = pd.DataFrame(X_test)
+predictions_y = pd.DataFrame(predications)
+predictions = pd.concat([predictions_X, predictions_y], axis=1)
+predictions.columns = ['fLength', 'fWidth', 'fSize', 'fConc', 'fConc1', 'fAsym', 'fM3Long', 'fM3Trans', 'fAlpha', 'fDist', 'class']
+predictions
